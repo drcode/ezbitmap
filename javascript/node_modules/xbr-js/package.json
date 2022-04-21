@@ -1,0 +1,35 @@
+{
+  "name": "xbr-js",
+  "version": "2.0.1",
+  "description": "xBRjs is a library to upscale images",
+  "module": "src/index.js",
+  "scripts": {
+    "build": "webpack --config demo.config.js && webpack --config umd.config.js && webpack --config umd.min.config.js && webpack --config esm.config.js && webpack --config esm.min.config.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joseprio/xBRjs.git"
+  },
+  "keywords": [
+    "xbr",
+    "image",
+    "scale",
+    "upscale",
+    "resize",
+    "enlarge"
+  ],
+  "author": "Josep del Rio",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/joseprio/xBRjs/issues"
+  },
+  "homepage": "https://github.com/joseprio/xBRjs#readme",
+  "devDependencies": {
+    "@babel/core": "^7.7.7",
+    "@babel/preset-env": "^7.7.7",
+    "@purtuga/esm-webpack-plugin": "^1.2.1",
+    "babel-loader": "^8.0.6",
+    "webpack": "^4.41.5",
+    "webpack-cli": "^3.3.10"
+  }
+}
