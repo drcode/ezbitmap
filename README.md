@@ -9,7 +9,7 @@ There is also a version of this library [for React programmers](https://github.c
 This is an NPM library, letting you create images inside a web app. Simply load the library into your web app via:
 
 ```
-npm add !lisperati/ezbitmap
+npm add @lisperati/ezbitmap
 ```
 
 Now, you can create javascript imagedata directly from ASCII art in your javascript code:
