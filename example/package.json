@@ -1,0 +1,4 @@
+{"dependencies":{"@lisperati/ezbitmap":"^0.5.10"},
+ "main":"index.js",
+ "devDependencies":{"webpack":"^5.72.1",
+                    "webpack-cli":"^4.9.2"}}
