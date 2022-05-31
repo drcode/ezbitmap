@@ -1,5 +1,7 @@
 import {xbr2x,xbr4x} from 'xbr-js';
 
+var debugging;
+
 function base64ToArray(base64) {
     var binstr = atob(base64);
     var buf = new Uint8Array(binstr.length);
@@ -118,7 +120,7 @@ const colors=[{name:  "blue",
                rgb:   [255,255,255]},
               {name:  "black",
                short: "blk",
-               rgb:   [0,0,0]}];
+               rgb:   [39,39,39]}];
 
 const allColors=[];
 colors.forEach(({rgb})=>{
@@ -133,25 +135,35 @@ colors.forEach(({rgb})=>{
 colors.forEach(({rgb})=>{
   allColors.push(rgb.map((n)=>Math.floor(n*0.7)));
 });
+
+const nameToColor=[];
+colors.forEach(({name,short},index)=>{
+  nameToColor[name]=index;
+  nameToColor[short]=index;
+});
+
 function generateImageData(width,height,bmp){
-  const resultBmp=new Uint8ClampedArray(width*height*4);
+  const resultBmp=new Uint8ClampedArray((width+2)*(height+2)*4);
   for(let i=0;i<width*height;i++){
     const col=bmp[i];
-    let r,g,b;
-    if(col===255)
+    let r,g,b,a;
+    a=255;
+    if(col===255) {
       [r,g,b]=[255,255,255];
+      a=0;
+    }
     else if(col===254)
       [r,g,b]=[0,0,0];
     else 
       [r,g,b]=allColors[col%48];
-    resultBmp[i*4+0]=r;
-    resultBmp[i*4+1]=g;
-    resultBmp[i*4+2]=b;
-    resultBmp[i*4+3]=255;
+    const off=(Math.floor(i/width)*(width+2)+(i%width)+1)*4;
+    resultBmp[off+0]=r;
+    resultBmp[off+1]=g;
+    resultBmp[off+2]=b;
+    resultBmp[off+3]=a;
   }
-  return new ImageData(resultBmp,width);
+  return new ImageData(resultBmp,width+2);
 }
-
 
 // #
 
@@ -173,30 +185,6 @@ function generateImageData(width,height,bmp){
 // #####
 //  ###  [1 0] [0 1]
 
-function shiftBmpx(width,height,bmpReference,bmp,offset){
-  const [offx,offy]=offset;
-  const [startx,terminatex,incrementx]=(()=>{
-    if(offx==1)
-      return [width-2,(k)=>k>=0,-1]
-    else
-      return [(offx==-1)?1:0,(k)=>k<width,1]
-    })();
-  const [starty,terminatey,incrementy]=(()=>{
-    if(offy==1)
-      return [height-2,(k)=>k>=0,-1]
-    else
-      return [(offy==-1)?1:0,(k)=>k<height,1]
-  })();
-  for(let y=starty;terminatey(y);y+=incrementy){
-    //console.log("y"+y);
-    for(let x=startx;terminatex(x);x+=incrementx){
-      //console.log("x"+x);
-      if(bmpReference[y*width+x]===254)
-        bmp[(y+offy)*width+x+offx]=254;
-    }
-  }
-}
-
 function shiftBmp(width,height,bmpReference,bmp,offset){
   const [offx,offy]=offset;
   for(let y=Math.max(0,-offy);y<Math.min(height,height-offy);y++){
@@ -215,7 +203,14 @@ function unionInPlace(dst,src){
   }
 }
 
-function db(s,val){
+function dbg(s,val){
+  if(!debugging)
+    return;
+  if(typeof s==="object"){
+    const key=Object.keys(s)[0];
+    val=s[key];
+    s=key;
+  }
   console.log(s+"=");
   console.log(val);
 }
@@ -303,8 +298,32 @@ function printRegions(s,regions){
   console.log(s);
 }
 
-function mergeRegions(regions,regionsSrc){
+function findSubregions(width,region){
+  const subregions=[];
+  const stack=[];
+  while(region.size>0){
+    const subregion=new Set();
+    const [initial]=region;
+    stack.push(initial);
+    while(stack.length>0){
+      const pos=stack.pop();
+      if(region.has(pos)){
+        subregion.add(pos);
+        region.delete(pos);
+        stack.push(pos+1);
+        stack.push(pos-1);
+        stack.push(pos+width);
+        stack.push(pos-width);
+      }
+    }
+    subregions.push(subregion);
+  }
+  return subregions;
+}
+
+function mergeRegions(width,regions,regionsSrc){
   for(const regionSrc of regionsSrc){
+    const oldSize=regionSrc.size;
     let num=regions.length;
     for(let i=0;i<num;i++){
       const region=regions[i];
@@ -312,8 +331,16 @@ function mergeRegions(regions,regionsSrc){
         if(region.has(pos))
           regionSrc.delete(pos);
     }
-    if(regionSrc.size>0)
-      regions.push(regionSrc);
+    if(regionSrc.size>0){
+      if (oldSize!=regionSrc.size){
+        //It's possible that the regionSrc got split into pieces by subracting the existing regions: We need to fix this by sorting through every pixel and see if it has contact with an existing subregion
+        const subregions=findSubregions(width,regionSrc);
+        regions=regions.concat(subregions);
+      }
+      else {
+         regions.push(regionSrc);
+      }
+    }
   }
   return regions;
 }
@@ -331,12 +358,16 @@ function fillPass(acc,item){
   let {width,height,bmp,regions}=acc;
   const [brushId,burn]=item;
   const brush=brushes[brushId];
+  //with "burn" it means we apply all previously found regions as black to the image before looking for new regions. This can patch up holes that allow new regions to be foudn
   if(burn){
     regions.forEach((region)=>region.forEach((pos)=>bmp[pos]=254));
   }
+  //We are going to create a new temporary bitmap that uses the current brush to "smear" existing bitmap, to plug holes that would prevent filling
   const bmpTemp=new Uint8Array(bmp);
   brush.forEach(partial(shiftBmp,width,height,bmp,bmpTemp));
+  //Now we find all watertight regions in the smeared image
   const regionsNew=findRegions(false,width,height,bmpTemp);
+  //Since the regions are specific to the smeared image, they are missing pixels along the edges of regions. Therefore, we will now fatten the regions, so that they are relevant to the original image.
   const regionsFat=[];
   regionsNew.forEach((regionNew)=>{
     const regionFat=new Set();
@@ -349,7 +380,8 @@ function fillPass(acc,item){
     };
     regionsFat.push(regionFat);
   });
-  acc.regions=mergeRegions(regions,regionsFat);
+  //The fat regions are added to our accumulated regions. However, since they may include already-assigned pixels, we need to run an algo to come up with a new canonical set of regions
+  acc.regions=mergeRegions(width,regions,regionsFat);
   acc.bmpTemp=bmpTemp;
   return acc;
 }
@@ -368,7 +400,9 @@ function regionSummaries(width,regions){
       xs.push(pos%width);
       ys.push(Math.floor(pos/width));
     }
-    const center=Math.floor(average(ys))*width+Math.floor(average(xs));
+    const y=average(ys);
+    const x=average(xs);
+    const center=Math.floor(y)*width+Math.floor(x);
     const outline=[];
     for(const pos of region){
       [pos-1,pos+1,pos-width,pos+width].forEach((k)=>{
@@ -388,6 +422,8 @@ function regionSummaries(width,regions){
       }
     }
     summaries.push({id:i,
+                    x:x,
+                    y:y,
                     center:center,
                     num:region.size,
                     neighbors:neighbors});
@@ -416,9 +452,14 @@ function bestLargeRegionCutoff(width,height,summary){
   return estimate(largeRegionCutoffRegression,sizeSum,size,pixels,regionNum);
 }
 
-function clusterColors(largeRegionCutoff,summary){
+function squareDist(pt1,pt2){
+  return (pt1.x-pt2.x)*(pt1.x-pt2.x)+(pt1.y-pt2.y)*(pt1.y-pt2.y);
+}
+
+function clusterColors(width,largeRegionCutoff,summary,labels){
   const big=[];
   const small=[];
+  //first we break all regions into big or small regions, based on the cutoff
   const vals=Array.from(summary.values());
   vals.forEach((item)=>{
     if(item.num>=largeRegionCutoff)
@@ -426,15 +467,18 @@ function clusterColors(largeRegionCutoff,summary){
     else
       small.push(item);
   });
+  //we are now creating a data structure that tells you for any region, what the closest "big" region is that it is connected to
   const connectedBig={};
+  //all big maps are directly connected to themselves
   big.forEach((item)=>connectedBig[item.id]=item.id);
+  //have to exhaustively go through the graph of connections to find what large regions the small regions are connected to
   while(true){
     const newConnected={};
     small.forEach((item)=>{
-      if(!connectedBig[item.id]){
+      if(!connectedBig.hasOwnProperty(item.id)){
         var big=null;
         item.neighbors.forEach((id)=>{
-          if(connectedBig[id]){
+          if(connectedBig.hasOwnProperty(id)){
             newConnected[item.id]=connectedBig[id];
           }
         })
@@ -446,16 +490,38 @@ function clusterColors(largeRegionCutoff,summary){
       connectedBig[k]=v;
     }
   }
+  //If colors are labeled, figure out which label is closest to the center of which large region, until all labels are assigned
+  const colors={};
+  while(true){
+    var bestDist=100000;
+    var bestId=-1;
+    var bestLabelIndex=null;
+    big.forEach((item)=>{
+      if(!colors.hasOwnProperty(item.id)){
+      labels.forEach((label,labelIndex)=>{
+        const dist=squareDist(summary[item.id],label);
+        if(dist<bestDist){
+          bestDist=dist;
+          bestId=item.id;
+          bestLabelIndex=labelIndex;
+        }})}});
+    if(bestId===-1)
+      break;
+    colors[bestId]=labels[bestLabelIndex].col;
+    labels.splice(bestLabelIndex,1);
+  }
+  //We'll keep iterating through the four most popular colors (blue green red purple) to pick good arbitrary colors
   const remainingColors=[0,1,2,3];
   let colorIndex=(big.length+3)%remainingColors.length;
-  const colors={};
   big.forEach((item)=>{
-    colors[item.id]=remainingColors[colorIndex];
-    colorIndex=(colorIndex+1)%remainingColors.length;
-  });
+    if(!colors.hasOwnProperty(item.id)){
+      colors[item.id]=remainingColors[colorIndex];
+      colorIndex=(colorIndex+1)%remainingColors.length;
+    }});
+  //small regions borrow the color of the large regions, except we darken/lighten them based on whether they are above/below the large region
   small.forEach((item)=>{
     const bigid=connectedBig[item.id];
-    if(bigid){
+    if(connectedBig.hasOwnProperty(item.id)){
       if(item.center<summary[bigid].center)
         colors[item.id]=colors[bigid]+16;
       else
@@ -505,7 +571,7 @@ const brushes=brushImages.map(([s,radius],index)=>{
 })
 
 function fillHighNeighborPixels(width,height,amnt,bmpReference,bmp){
-  for(let pos=width+1;pos<(width-1)*height-1;pos++){
+  for(let pos=width+1;pos<width*(height-1)-1;pos++){
     if(bmp[pos]===255){
       let num=0;
       let col=6;
@@ -518,27 +584,121 @@ function fillHighNeighborPixels(width,height,amnt,bmpReference,bmp){
           }
         }
       });
-      if(num>=amnt)
-        bmp[pos]=col;
+      if(num>=amnt){
+        let found=false;
+        [(pos-1),(pos+1),(pos-width),(pos+width)].forEach((p)=>{
+          const val=bmpReference[p];
+          if(val<254){
+            col=val;
+            found=true;
+          }
+        });
+        if (found){
+          bmp[pos]=col;
+        }
+      }
     }
   }
 }
 
-function ezbitmap(art){
+function extractLabelsHorizontal(art){
+  var labels=[];
+  for(var y=0;y<art.length;y++){
+    var found=true;
+    while (found){
+      found=false;
+      for(const [key,value] of Object.entries(nameToColor)){
+        const n=art[y].indexOf(key);
+        if(n!=-1){
+          art[y]=art[y].substring(0,n)+(' '.repeat(key.length))+art[y].substring(n+key.length);
+          labels.push({x:(n+0.5+key.length/2)*5,y:(y+0.5)*5,col:value});
+          found=true;
+        }
+      }
+    }
+  }
+  return labels;
+}
+
+function flipStringArray(arr){
+  var k=[]
+  for(var i=0;i<arr[0].length;i++){
+    k.push([]);
+  }
+  arr.forEach((s,index)=>{
+    for(var i=0;i<s.length;i++){
+      k[i].push(s.charAt(i));
+    }});
+  return k.map((g)=>g.join(""));
+}
+
+function extractLabels(art){
+  const labels=extractLabelsHorizontal(art);
+  const flip=flipStringArray(art);
+  const labelsv=extractLabelsHorizontal(flip);
+  const flip2=flipStringArray(flip);
+  flip2.forEach((s,index)=>{art[index]=s});
+  labelsv.forEach((label)=>{labels.push({x:label.y,y:label.x,col:label.col})});
+  if(art.length>0 && art[0].length>0){
+    while(true){
+      var found=false;
+      if(art.every((s)=>{return s.charAt(0)===" "})){
+        art.forEach((s,i)=>art[i]=s.slice(1));
+        labels.forEach((label)=>label.x-=5);
+        found=true;
+      }
+      if(!found)
+        break;
+    }
+    while(true){
+      var found=false;
+      if(art[0].trim().length===0){
+        art.splice(0,1);
+        labels.forEach((label)=>label.y-=5);
+        found=true;
+      }
+      if(!found)
+        break;
+    }
+    while(true){
+      var found=false;
+      if(art.every((s)=>{return s.charAt(s.length-1)===" ";})){
+        art.forEach((s,i)=>art[i]=s.slice(0,s.length-1));
+        found=true;
+      }
+      if(!found)
+        break;
+    }
+    while(true){
+      var found=false;
+      if(art[art.length-1].trim().length===0){
+        art.pop();
+        found=true;
+      }
+      if(!found)
+        break;
+    }
+  }
+  return labels;
+}
+
+function ezbitmap(art,options){
   art=normalizeArt(art);
   if(art.length===0){
     return null;
   }
+  debugging=options.debugging;
+  const labels=extractLabels(art);
   const {bmp,width,height}=digitizeArt(art);
   const passes=[[0,false],[1,false],[2,false],[3,false],[4,false],[5,false],[0,true],[1,false],[2,false],[3,false],[4,false],[0,true]];
   const bmpOriginal=new Uint8Array(bmp);
   const {regions,bmpTemp}=passes.reduce(fillPass,{width:width,
-                                                   height:height,
-                                                   bmp:bmp,
-                                                   regions:[]});
+                                                  height:height,
+                                                  bmp:bmp,
+                                                  regions:[]});
   const summary=regionSummaries(width,regions);
   const largeRegionCutoff=bestLargeRegionCutoff(width,height,summary);
-  const colors=clusterColors(largeRegionCutoff,summary);
+  const colors=clusterColors(width,largeRegionCutoff,summary,labels);
   for(let i=0;i<regions.length;i++){
     const region=regions[i];
     const col=colors[i];
@@ -550,15 +710,17 @@ function ezbitmap(art){
   }
   const bmpReference=new Uint8Array(bmpOriginal);
   fillHighNeighborPixels(width,height,4,bmpReference,bmpOriginal);
-  fillHighNeighborPixels(width,height,4,bmpReference,bmpOriginal);
+  const bmpReference2=new Uint8Array(bmpOriginal);
+  fillHighNeighborPixels(width,height,4,bmpReference2,bmpOriginal);
 
   const imageData=generateImageData(width,height,bmpOriginal);
   const originalPixelView = new Uint32Array(imageData.data.buffer);
-  const scaledPixelView = xbr4x(originalPixelView, width,height);
+  const scaledPixelView = xbr4x(originalPixelView, width+2,height+2);
   const resultBmp=new Uint8ClampedArray(scaledPixelView.buffer);
-  return new ImageData(resultBmp,width*4);
+  return new ImageData(resultBmp,(width+2)*4);
 }
 
-const font=base64ToArray("/////////////////////////////////////////////////////////////////////v/+///+//7///////////////////////7//v/+/v7+/v/+//7//v7+/v7//v/+/////////////////////////////////////////////////////////////////////////////////////////////////////////v/////+//////////////////////////7+///+//////7//////v///////v7///7+///////+//////7//////v///v7//////v///v/+//7//v7+//7//v/+///+//////7//////v///v7+/v7///7//////v/////////////////////////+/////v/////////////////+/v7+/v////////////////////////////////////7+/////v7///////7////+/////v////7////+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+/////v7///7//v/+/v7+/v////7//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////v7///////////7+//////////////////7+///////////+/v///v7///////7+///+///+/v///////v///////v7///////7+/v7+///////+/v7+/v///////v7///////7///////7+///+///+/v///////////////////////////////////////v7+//7+/v7+/v7///7+/v///v/+/v7///7+/v/+/////v7+/v7+/v////7+/////v///////////////////////////////////v7+/v7//////v/////+///////+/v7+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////7////+/v////7+/v7+/v7////+/v////7///////////////////////////////////////////////////////////////////7////+/v///v/+/v7///7///7//v////7+//////7//////v/////+//////7+/v7+//7//v/+//7//v7//v/+/v/+//7+//7//v///////////////////////////////////v7+//7////+/v////7+/////v/+/v7//v7+/v/+/////v7+/v7//v/////+///////+/v7//v////7+/////v7///7+//7+/v7+/v7+//7////+/v7+/v/+///+//7////+//7+/v7+/v/////+/v7//////v7+/v7+//7+/v7+///+//////7//////v/////+//////////////////////////////////////////////////////////////////////7////+/v/+//7+//7//v7//v/+//7+/v///////////////////////////////////v////7//v/+/////v/////+//////7///////////////////////////////////////7+/v///v/////+//////7//////v7+/v///////v///////v///////v///////v7+/v/////+//////7//////v///v7+//////7////+//7//v////7////////////////////////////////////////+/v7+/v/+///////+//////////////////////////////////////7+/v/+/////v/+/v7+/////////////////////////////////////////////////v7+/v7///////7+/v7//////v/////+//7+/v7+/////v/+/v7+/////////v7+//7+/v7+/v///////v7+/////////////////////////////////////////////////////////////////////v/////+//////7+/v7//v////7+/////v/////////+/////////////v/////+/////////////////////////////////////v/////+//////7///7+/v7+///+///+/v///////////////////////////////////////////////v7+/v7+//7//v7//v/+//////////////7+/v7//v////7+/////v////////7+/v/+/////v7////+//7+/v/////////////////////////////////////////////////////////////////////////////////+//7+/v/+//////7////////////////////////////////////////+/////v7+/////v/////+//////7////////////////+/////v7////+//7+/v7////////////////////////////////////////////////////////////////////////////////+/v/+/v///v///v7//v7///////7////+//7//v////7///7+/////////////////////////////////////////v7////+/////v7//////v/////+/v////7//////v/////+//////7//////v////7+//////7//////v7////+/////v7///////////7+//7+///+////////////////////////////////////////////////");
+const font=base64ToArray("/////////////////////////////////////v/////+//////7////////////+/////v/+///+//7///////////////////////7//v/+/v7+/v/+//7//v7+/v7//v/+///+/v7+/v/+//7//v7+/////v/+/v7+/v/+/v///v7+//7////+/////v/+/v7///7+//7+///+///+///+/v/+/v///v///v7//v///v/////+///////////////////////////+/v///v/////+//////7///////7+/v7///////7//////v/////+///+/v///////v///v/+//7//v7+//7//v/+///+//////7//////v///v7+/v7///7//////v/////////////////////////+/////v/////////////////+/v7+/v////////////////////////////////////7+/////v7///////7////+/////v////7////+///////+/v7//v////7+//7//v7////+//7+/v////7////+/v/////+//////7///7+/v7+//7+/v/+/////v///v7///7////+/v7+/v/+/v7//v////7///7+//7////+//7+/v/////+/////v7///7//v/+/v7+/v////7//v7+/v7+//////7+/v7///////7+/v7+///+/v7+/v/////+/v7+//7////+//7+/v/+/v7+/v/////+//////7//////v/////+//7+/v/+/////v/+/v7//v////7//v7+///+/v7//v////7//v7+/v/////+//////7//////////v7///////////7+//////////////////7+///////////+/v///v7///////7+///+///+/v///////v///////v7///////7+/v7+///////+/v7+/v///////v7///////7///////7+///+///+/v/////+/v7//v////7////+/////v/////+/////v7+//7+/v7+/v7///7+/v///v/+/v7///7+/v/+/////v7+/v7+/v////7+/////v7+/v7//v////7+/v7+//7////+/v7+/v///v7+/v7//////v/////+///////+/v7+/v7+/v/+/////v7////+/v////7+/v7+//7+/v7+/v/////+/v7///7//////v7+/v7+/v7+/v7//////v7+/v7+//////7///////7+/v7+//////7///7+/v////7//v7+//7////+/v////7+/v7+/v7////+/v////7+/v7+/v///v/////+//////7///7+/v7+//////7//////v/////+/v////7//v7+//7////+/v///v/+/v7///7///7//v////7+//////7//////v/////+//////7+/v7+//7//v/+//7//v7//v/+/v/+//7+//7//v7////+/v7///7+//7//v7///7+/v////7//v7+//7////+/v////7+/////v/+/v7//v7+/v/+/////v7+/v7//v/////+///////+/v7//v////7+/////v7///7+//7+/v7+/v7+//7////+/v7+/v/+///+//7////+//7+/v7+/v/////+/v7//////v7+/v7+//7+/v7+///+//////7//////v/////+///+/////v7////+/v////7+/////v/+/v7//v////7+/////v/+//7///7//v////7///7////+/v/+//7+//7//v7//v/+//7+/v/+/////v/+//7////+/////v/+//7////+/v////7//v/+/////v/////+//////7///7+/v7+/////v////7////+/////v7+/v7///7+/v///v/////+//////7//////v7+/v///////v///////v///////v///////v7+/v/////+//////7//////v///v7+//////7////+//7//v////7////////////////////////////////////////+/v7+/v/+///////+///////////////////////////////+/v7///7+/v7+/////v/+/v7+/v/////+//////7+/v7//v////7+/v7+/////////////////v7+/v7///////7+/v7//////v/////+//7+/v7+/////v/+/v7+/////////v7+//7+/v7+/v///////v7+/////v////7+/////v/////+/v////7//////v7+//7////+//7+/v7//////v/+/v7//v/////+//////7+/v7//v////7+/////v/////////+/////////////v/////+///////+//////7//////v///v/+/////v///v/////+//////7///7+/v7+///+///+/v///v/////+//////7//////v/////+/v///////////////v7+/v7+//7//v7//v/+//////////////7+/v7//v////7+/////v////////7+/v/+/////v7////+//7+/v///v7////+//7///7+/////v/////+/////v7+/v7+/////v7+/v7+//////7//////v/////////////+//7+/v/+//////7////////////+/v7+/v7+//////7+/v7+/v7////+/////v7+/////v/////+//////7////////////////+/////v7////+//7+/v7//////////////v////7//v/+/////v////////////////7//v/+/v/+//7//v/+///////////////+/v/+/v///v///v7//v7///////7////+//7//v////7///7+///////////+/v7+/v///v7///7+///+/v7+/v///v7////+/////v7//////v/////+/v////7//////v/////+//////7//////v////7+//////7//////v7////+/////v7///////////7+//7+///+////////////////////////////////////////////////");
 
+export {colors};
 export default ezbitmap;
