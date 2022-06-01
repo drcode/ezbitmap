@@ -8,7 +8,11 @@ Follow me on [twitter](https://twitter.com/lisperati) for any future news on thi
 
 # Installation
 
-This is an NPM library, letting you create images inside a web app. Simply load the library into your web app via:
+This is an NPM library, [available here](https://www.npmjs.com/package/@lisperati/ezbitmap).
+
+letting you create images inside a web app. Simply load the library into your web app via:
+
+
 
 ```
 npm add @lisperati/ezbitmap
